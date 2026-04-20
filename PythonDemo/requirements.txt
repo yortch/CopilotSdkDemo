@@ -1,0 +1,8 @@
+annotated-types==0.7.0
+github-copilot-sdk==0.2.2
+pydantic==2.13.3
+pydantic_core==2.46.3
+python-dateutil==2.9.0.post0
+six==1.17.0
+typing-inspection==0.4.2
+typing_extensions==4.15.0

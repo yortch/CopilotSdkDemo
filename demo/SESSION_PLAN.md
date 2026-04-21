@@ -25,9 +25,56 @@ Key talking point: **Copilot CLI runs headless inside Actions**, so every workfl
 
 ## 2. Prereqs to show on screen (2 min)
 
-- Repo variable / secret: `COPILOT_CLI_TOKEN` (fine-grained PAT with Copilot + repo scopes)
 - `permissions:` block in workflows is least-privilege
-- `gh copilot --version` in a local terminal to show the same binary CI will use
+- `copilot --version` in a local terminal to show the same binary CI will use
+- Repo secret `COPILOT_CLI_TOKEN` configured (see below)
+
+### Creating the `COPILOT_CLI_TOKEN` secret
+
+The workflow authenticates the Copilot CLI via the `COPILOT_GITHUB_TOKEN` env var, sourced from a repo secret named `COPILOT_CLI_TOKEN`.
+
+**1. Create a fine-grained PAT** at https://github.com/settings/personal-access-tokens/new
+
+- **Resource owner:** your org or user (e.g. `yortch`)
+- **Repository access:** *Only select repositories* → this repo
+- **Repository permissions:**
+  - Contents: Read
+  - Issues: Read and write
+  - Pull requests: Read and write
+  - Metadata: Read (auto)
+- **Account permissions:**
+  - Copilot Chat / Copilot Requests: Read
+
+> Classic PAT alternative: scopes `repo`, `workflow` (and Copilot access on the account).
+
+**2. Store it as a repo secret** (paste at the prompt):
+
+```bash
+gh secret set COPILOT_CLI_TOKEN --repo <owner>/<repo>
+```
+
+Non-interactive variant:
+
+```bash
+echo -n "github_pat_xxx" | gh secret set COPILOT_CLI_TOKEN --repo <owner>/<repo>
+```
+
+**3. Verify:**
+
+```bash
+gh secret list --repo <owner>/<repo>
+# NAME               UPDATED
+# COPILOT_CLI_TOKEN  <timestamp>
+```
+
+**4. Smoke test** (no PR required):
+
+```bash
+gh workflow run "Copilot CLI Demo" --repo <owner>/<repo> -f scenario=review
+gh run watch $(gh run list --repo <owner>/<repo> -L 1 --json databaseId -q '.[0].databaseId') --repo <owner>/<repo>
+```
+
+> `GITHUB_TOKEN` is auto-provided by Actions — no setup needed for `gh issue comment` / `gh pr comment` / `gh api` calls.
 
 ---
 

@@ -1,0 +1,185 @@
+name: Copilot CLI Demo
+
+# Demo workflow showing Copilot CLI running headless inside GitHub Actions.
+# Move this file to `.github/workflows/` at the repo root to activate it.
+
+on:
+  issues:
+    types: [opened]
+  pull_request:
+    types: [opened, synchronize]
+  workflow_dispatch:
+    inputs:
+      scenario:
+        description: "Which demo scenario to run"
+        type: choice
+        options: [triage, review, scan-explain, release-notes]
+        default: review
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+  security-events: read
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Scenario A — Issue triage
+  # ---------------------------------------------------------------------------
+  triage:
+    if: github.event_name == 'issues' || inputs.scenario == 'triage'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Copilot CLI
+        run: |
+          npm install -g @github/copilot
+          copilot --version
+
+      - name: Classify issue with Copilot CLI
+        env:
+          GH_TOKEN: ${{ secrets.COPILOT_CLI_TOKEN }}
+          ISSUE_BODY: ${{ github.event.issue.body }}
+          ISSUE_TITLE: ${{ github.event.issue.title }}
+        run: |
+          prompt=$(cat <<EOF
+          You are a triage bot. Classify the following GitHub issue as
+          exactly one of: bug, feature, question, docs. Then list up to 3
+          suggested labels and a one-sentence summary.
+
+          Title: $ISSUE_TITLE
+          Body:
+          $ISSUE_BODY
+
+          Respond in JSON: {"kind":"...","labels":[...],"summary":"..."}
+          EOF
+          )
+          echo "$prompt" | copilot --no-interactive > triage.json
+          cat triage.json
+
+      - name: Post triage comment
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          summary=$(jq -r .summary triage.json)
+          kind=$(jq -r .kind triage.json)
+          gh issue comment "${{ github.event.issue.number }}" \
+            --body "🤖 **Copilot triage**\n\n- Kind: \`$kind\`\n- Summary: $summary"
+
+  # ---------------------------------------------------------------------------
+  # Scenario B — PR review assistant (the headline demo)
+  # ---------------------------------------------------------------------------
+  review:
+    if: github.event_name == 'pull_request' || inputs.scenario == 'review'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Copilot CLI
+        run: npm install -g @github/copilot
+
+      - name: Generate diff
+        run: |
+          base_sha="${{ github.event.pull_request.base.sha }}"
+          git diff "${base_sha}"...HEAD > pr.diff
+          wc -l pr.diff
+
+      - name: Run Copilot review
+        env:
+          GH_TOKEN: ${{ secrets.COPILOT_CLI_TOKEN }}
+        run: |
+          {
+            echo "Review the following diff. Flag bugs, security issues,"
+            echo "and style problems. Use a markdown list. Be concise."
+            echo
+            cat pr.diff
+          } | copilot --no-interactive > review.md
+          cat review.md
+
+      - name: Post review comment
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr comment "${{ github.event.pull_request.number }}" \
+            --body-file review.md
+
+  # ---------------------------------------------------------------------------
+  # Scenario C — CodeQL finding explainer
+  # ---------------------------------------------------------------------------
+  scan-explain:
+    if: inputs.scenario == 'scan-explain'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install Copilot CLI
+        run: npm install -g @github/copilot
+
+      - name: Fetch open code-scanning alerts
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh api "/repos/${{ github.repository }}/code-scanning/alerts?state=open" \
+            > alerts.json
+          jq 'length' alerts.json
+
+      - name: Explain each finding
+        env:
+          GH_TOKEN: ${{ secrets.COPILOT_CLI_TOKEN }}
+        run: |
+          jq -c '.[]' alerts.json | while read -r alert; do
+            echo "$alert" | copilot --no-interactive \
+              -p "Explain this CodeQL alert in plain English and propose a fix."
+            echo "---"
+          done | tee explanations.md
+
+  # ---------------------------------------------------------------------------
+  # Scenario D — Release notes + Azure DevOps sync
+  # ---------------------------------------------------------------------------
+  release-notes:
+    if: inputs.scenario == 'release-notes'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Copilot CLI
+        run: npm install -g @github/copilot
+
+      - name: Build commit log
+        run: |
+          prev=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
+          range="${prev:+$prev..}HEAD"
+          git log "$range" --pretty=format:'- %s (%h)' > commits.txt
+          head -n 40 commits.txt
+
+      - name: Summarize with Copilot CLI
+        env:
+          GH_TOKEN: ${{ secrets.COPILOT_CLI_TOKEN }}
+        run: |
+          {
+            echo "Summarize these commits as user-facing release notes,"
+            echo "grouped by Added / Changed / Fixed. Markdown output."
+            echo
+            cat commits.txt
+          } | copilot --no-interactive > release-notes.md
+          cat release-notes.md
+
+      - name: Azure login
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Push summary to ADO work item
+        env:
+          AZURE_DEVOPS_EXT_PAT: ${{ secrets.ADO_PAT }}
+        run: |
+          az extension add --name azure-devops --only-show-errors
+          az devops configure --defaults \
+            organization=https://dev.azure.com/${{ vars.ADO_ORG }} \
+            project=${{ vars.ADO_PROJECT }}
+          az boards work-item update \
+            --id "${{ vars.ADO_RELEASE_WORKITEM_ID }}" \
+            --discussion "$(cat release-notes.md)"

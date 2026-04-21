@@ -82,8 +82,13 @@ jobs:
 
       - name: Generate diff
         run: |
-          base_sha="${{ github.event.pull_request.base.sha }}"
-          git diff "${base_sha}"...HEAD > pr.diff
+          if [ -n "${{ github.event.pull_request.base.sha }}" ]; then
+            base_sha="${{ github.event.pull_request.base.sha }}"
+            git diff "${base_sha}"...HEAD > pr.diff
+          else
+            # workflow_dispatch fallback: diff the last commit
+            git diff HEAD~1..HEAD > pr.diff
+          fi
           wc -l pr.diff
 
       - name: Run Copilot review
@@ -101,6 +106,7 @@ jobs:
           cat review.md
 
       - name: Post review comment
+        if: github.event_name == 'pull_request'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
